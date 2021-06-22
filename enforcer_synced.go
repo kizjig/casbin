@@ -21,18 +21,20 @@ import (
 
 	"github.com/Knetic/govaluate"
 	"github.com/casbin/casbin/v2/persist"
+	"github.com/sasha-s/go-deadlock"
 )
 
 // SyncedEnforcer wraps Enforcer and provides synchronized access
 type SyncedEnforcer struct {
 	*Enforcer
-	m               sync.RWMutex
+	m               deadlock.RWMutex		// Use deadlock mutex so we can track down deadlock.
 	stopAutoLoad    chan struct{}
 	autoLoadRunning int32
 }
 
 // NewSyncedEnforcer creates a synchronized enforcer via file or DB.
 func NewSyncedEnforcer(params ...interface{}) (*SyncedEnforcer, error) {
+	deadlock.Opts.DeadlockTimeout = time.Second * 8
 	e := &SyncedEnforcer{}
 	var err error
 	e.Enforcer, err = NewEnforcer(params...)
