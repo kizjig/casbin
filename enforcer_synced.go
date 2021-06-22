@@ -15,7 +15,6 @@
 package casbin
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 
