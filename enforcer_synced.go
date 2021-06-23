@@ -15,6 +15,7 @@
 package casbin
 
 import (
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -33,7 +34,14 @@ type SyncedEnforcer struct {
 
 // NewSyncedEnforcer creates a synchronized enforcer via file or DB.
 func NewSyncedEnforcer(params ...interface{}) (*SyncedEnforcer, error) {
-	deadlock.Opts.DeadlockTimeout = time.Second * 8
+	deadlock.Opts.DeadlockTimeout = time.Second * 5
+	deadlock.Opts.OnPotentialDeadlock = func() {
+		_, errt := deadlock.Opts.LogBuf.Write([]byte("Potential deadlock has occurred!!!"))
+		if errt != nil {
+			panic(errt)
+		}
+		os.Exit(2)
+	}
 	e := &SyncedEnforcer{}
 	var err error
 	e.Enforcer, err = NewEnforcer(params...)
