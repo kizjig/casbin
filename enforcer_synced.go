@@ -15,6 +15,7 @@
 package casbin
 
 import (
+	"log"
 	"os"
 	"sync/atomic"
 	"time"
@@ -153,9 +154,18 @@ func (e *SyncedEnforcer) BuildRoleLinks() error {
 
 // Enforce decides whether a "subject" can access a "object" with the operation "action", input parameters are usually: (sub, obj, act).
 func (e *SyncedEnforcer) Enforce(rvals ...interface{}) (bool, error) {
+	start := time.Now()
+	log.Print("START: Casbin SyncedEnforcer requesting read lock\n")
 	e.m.RLock()
 	defer e.m.RUnlock()
-	return e.Enforcer.Enforce(rvals...)
+	duration := time.Since(start)
+	log.Printf("[%v] FINISHED: Casbin SyncedEnforcer read lock obtained\n", duration)
+	log.Print("START: Casbin SyncedEnforcer enforcing\n")
+	start = time.Now()
+	res, err := e.Enforcer.Enforce(rvals...)
+	duration = time.Since(start)
+	log.Printf("[%v] FINISHED: Casbin SyncedEnforcer enforcing\n", duration)
+	return res, err
 }
 
 // EnforceWithMatcher use a custom matcher to decides whether a "subject" can access a "object" with the operation "action", input parameters are usually: (matcher, sub, obj, act), use model matcher by default when matcher is "".
