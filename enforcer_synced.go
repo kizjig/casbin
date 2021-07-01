@@ -34,7 +34,8 @@ type SyncedEnforcer struct {
 
 // NewSyncedEnforcer creates a synchronized enforcer via file or DB.
 func NewSyncedEnforcer(params ...interface{}) (*SyncedEnforcer, error) {
-	deadlock.Opts.DeadlockTimeout = time.Second * 5
+	deadlock.Opts.DeadlockTimeout = time.Second * 4
+	deadlock.Opts.LogBuf = os.Stdout
 	deadlock.Opts.OnPotentialDeadlock = func() {
 		_, errt := deadlock.Opts.LogBuf.Write([]byte("Potential deadlock has occurred!!!"))
 		if errt != nil {
