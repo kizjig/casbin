@@ -146,6 +146,7 @@ func (model Model) HasPolicies(sec string, ptype string, rules [][]string) bool 
 func (model Model) AddPolicy(sec string, ptype string, rule []string) {
 	assertion := model[sec][ptype]
 	assertion.Policy = append(assertion.Policy, rule)
+	assertion.PolicyMap[strings.Join(rule, DefaultSep)] = len(model[sec][ptype].Policy) - 1
 
 	if sec == "p" && assertion.priorityIndex >= 0 {
 		if idxInsert, err := strconv.Atoi(rule[assertion.priorityIndex]); err == nil {
@@ -157,6 +158,7 @@ func (model Model) AddPolicy(sec string, ptype string, rule []string) {
 				}
 				if idx > idxInsert {
 					assertion.Policy[i] = assertion.Policy[i-1]
+					assertion.PolicyMap[strings.Join(assertion.Policy[i-1], DefaultSep)]++
 				} else {
 					break
 				}
@@ -165,7 +167,6 @@ func (model Model) AddPolicy(sec string, ptype string, rule []string) {
 			assertion.PolicyMap[strings.Join(rule, DefaultSep)] = i
 		}
 	}
-	assertion.PolicyMap[strings.Join(rule, DefaultSep)] = len(model[sec][ptype].Policy) - 1
 }
 
 // AddPolicies adds policy rules to the model.
@@ -287,13 +288,9 @@ func (model Model) RemoveFilteredPolicy(sec string, ptype string, fieldIndex int
 	var tmp [][]string
 	var effects [][]string
 	res := false
-	firstIndex := -1
+	model[sec][ptype].PolicyMap = map[string]int{}
 
-	if len(fieldValues) == 0 {
-		return false, effects
-	}
-
-	for index, rule := range model[sec][ptype].Policy {
+	for _, rule := range model[sec][ptype].Policy {
 		matched := true
 		for i, fieldValue := range fieldValues {
 			if fieldValue != "" && rule[fieldIndex+i] != fieldValue {
@@ -303,22 +300,16 @@ func (model Model) RemoveFilteredPolicy(sec string, ptype string, fieldIndex int
 		}
 
 		if matched {
-			if firstIndex == -1 {
-				firstIndex = index
-			}
-			delete(model[sec][ptype].PolicyMap, strings.Join(rule, DefaultSep))
 			effects = append(effects, rule)
-			res = true
 		} else {
 			tmp = append(tmp, rule)
+			model[sec][ptype].PolicyMap[strings.Join(rule, DefaultSep)] = len(tmp) - 1
 		}
 	}
 
-	if firstIndex != -1 {
+	if len(tmp) != len(model[sec][ptype].Policy) {
 		model[sec][ptype].Policy = tmp
-		for i := firstIndex; i < len(model[sec][ptype].Policy); i++ {
-			model[sec][ptype].PolicyMap[strings.Join(model[sec][ptype].Policy[i], DefaultSep)] = i
-		}
+		res = true
 	}
 
 	return res, effects

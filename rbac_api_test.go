@@ -209,6 +209,16 @@ func testHasPermission(t *testing.T, e *Enforcer, name string, permission []stri
 	}
 }
 
+func testGetNamedPermissionsForUser(t *testing.T, e *Enforcer, ptype string, name string, res [][]string, domain ...string) {
+	t.Helper()
+	myRes := e.GetNamedPermissionsForUser(ptype, name, domain...)
+	t.Log("Named permissions for ", name, ": ", myRes)
+
+	if !util.Array2DEquals(res, myRes) {
+		t.Error("Named permissions for ", name, ": ", myRes, ", supposed to be ", res)
+	}
+}
+
 func TestPermissionAPI(t *testing.T) {
 	e, _ := NewEnforcer("examples/basic_without_resources_model.conf", "examples/basic_without_resources_policy.csv")
 
@@ -239,6 +249,13 @@ func TestPermissionAPI(t *testing.T) {
 	testEnforceWithoutUsers(t, e, "bob", "read", true)
 	testEnforceWithoutUsers(t, e, "bob", "write", true)
 
+	_, _ = e.AddPermissionsForUser("jack",
+		[]string{"read"},
+		[]string{"write"})
+
+	testEnforceWithoutUsers(t, e, "jack", "read", true)
+	testEnforceWithoutUsers(t, e, "bob", "write", true)
+
 	_, _ = e.DeletePermissionForUser("bob", "read")
 
 	testEnforceWithoutUsers(t, e, "alice", "read", false)
@@ -252,6 +269,10 @@ func TestPermissionAPI(t *testing.T) {
 	testEnforceWithoutUsers(t, e, "alice", "write", false)
 	testEnforceWithoutUsers(t, e, "bob", "read", false)
 	testEnforceWithoutUsers(t, e, "bob", "write", false)
+
+	e, _ = NewEnforcer("examples/rbac_with_multiple_policy_model.conf", "examples/rbac_with_multiple_policy_policy.csv")
+	testGetNamedPermissionsForUser(t, e, "p", "user", [][]string{{"user", "/data", "GET"}})
+	testGetNamedPermissionsForUser(t, e, "p2", "user", [][]string{{"user", "view"}})
 }
 
 func testGetImplicitRoles(t *testing.T, e *Enforcer, name string, res []string) {
@@ -259,7 +280,7 @@ func testGetImplicitRoles(t *testing.T, e *Enforcer, name string, res []string) 
 	myRes, _ := e.GetImplicitRolesForUser(name)
 	t.Log("Implicit roles for ", name, ": ", myRes)
 
-	if !util.ArrayEquals(res, myRes) {
+	if !util.SetEquals(res, myRes) {
 		t.Error("Implicit roles for ", name, ": ", myRes, ", supposed to be ", res)
 	}
 }
@@ -269,7 +290,7 @@ func testGetImplicitRolesInDomain(t *testing.T, e *Enforcer, name string, domain
 	myRes, _ := e.GetImplicitRolesForUser(name, domain)
 	t.Log("Implicit roles in domain ", domain, " for ", name, ": ", myRes)
 
-	if !util.ArrayEquals(res, myRes) {
+	if !util.SetEquals(res, myRes) {
 		t.Error("Implicit roles in domain ", domain, " for ", name, ": ", myRes, ", supposed to be ", res)
 	}
 }
@@ -298,7 +319,7 @@ func testGetImplicitPermissions(t *testing.T, e *Enforcer, name string, res [][]
 	myRes, _ := e.GetImplicitPermissionsForUser(name)
 	t.Log("Implicit permissions for ", name, ": ", myRes)
 
-	if !util.Array2DEquals(res, myRes) {
+	if !util.Set2DEquals(res, myRes) {
 		t.Error("Implicit permissions for ", name, ": ", myRes, ", supposed to be ", res)
 	}
 }
@@ -308,8 +329,18 @@ func testGetImplicitPermissionsWithDomain(t *testing.T, e *Enforcer, name string
 	myRes, _ := e.GetImplicitPermissionsForUser(name, domain)
 	t.Log("Implicit permissions for", name, "under", domain, ":", myRes)
 
-	if !util.Array2DEquals(res, myRes) {
+	if !util.Set2DEquals(res, myRes) {
 		t.Error("Implicit permissions for", name, "under", domain, ":", myRes, ", supposed to be ", res)
+	}
+}
+
+func testGetNamedImplicitPermissions(t *testing.T, e *Enforcer, ptype string, name string, res [][]string) {
+	t.Helper()
+	myRes, _ := e.GetNamedImplicitPermissionsForUser(ptype, name)
+	t.Log("Named implicit permissions for ", name, ": ", myRes)
+
+	if !util.Set2DEquals(res, myRes) {
+		t.Error("Named implicit permissions for ", name, ": ", myRes, ", supposed to be ", res)
 	}
 }
 
@@ -321,6 +352,11 @@ func TestImplicitPermissionAPI(t *testing.T) {
 
 	testGetImplicitPermissions(t, e, "alice", [][]string{{"alice", "data1", "read"}, {"data1_admin", "data1", "read"}, {"data1_admin", "data1", "write"}, {"data2_admin", "data2", "read"}, {"data2_admin", "data2", "write"}})
 	testGetImplicitPermissions(t, e, "bob", [][]string{{"bob", "data2", "write"}})
+
+	e, _ = NewEnforcer("examples/rbac_with_multiple_policy_model.conf", "examples/rbac_with_multiple_policy_policy.csv")
+
+	testGetNamedImplicitPermissions(t, e, "p", "alice", [][]string{{"user", "/data", "GET"}, {"admin", "/data", "POST"}})
+	testGetNamedImplicitPermissions(t, e, "p2", "alice", [][]string{{"user", "view"}, {"admin", "create"}})
 }
 
 func TestImplicitPermissionAPIWithDomain(t *testing.T) {
@@ -421,7 +457,7 @@ func testGetImplicitUsersForRole(t *testing.T, e *Enforcer, name string, res []s
 	sort.Strings(res)
 	sort.Strings(myRes)
 
-	if !util.ArrayEquals(res, myRes) {
+	if !util.SetEquals(res, myRes) {
 		t.Error("Implicit users for ", name, ": ", myRes, ", supposed to be ", res)
 	}
 }

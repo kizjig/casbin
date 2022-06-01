@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Knetic/govaluate"
+
 	"github.com/casbin/casbin/v2/persist"
 	"github.com/sasha-s/go-deadlock"
 )
@@ -99,8 +100,9 @@ func (e *SyncedEnforcer) StopAutoLoadPolicy() {
 
 // SetWatcher sets the current watcher.
 func (e *SyncedEnforcer) SetWatcher(watcher persist.Watcher) error {
-	e.watcher = watcher
-	return watcher.SetUpdateCallback(func(string) { _ = e.LoadPolicy() })
+	e.m.Lock()
+	defer e.m.Unlock()
+	return e.Enforcer.SetWatcher(watcher)
 }
 
 // LoadModel reloads the model from the model CONF file.
@@ -119,9 +121,23 @@ func (e *SyncedEnforcer) ClearPolicy() {
 
 // LoadPolicy reloads the policy from file/database.
 func (e *SyncedEnforcer) LoadPolicy() error {
+	e.m.RLock()
+	cleanedNewModel := e.model.Copy()
+	e.m.RUnlock()
+	newModel, err := e.prepareNewModel(cleanedNewModel)
+	if err != nil {
+		return err
+	}
+
 	e.m.Lock()
 	defer e.m.Unlock()
-	return e.Enforcer.LoadPolicy()
+	if e.autoBuildRoleLinks {
+		if err := e.tryBuildingRoleLinksWithModel(newModel); err != nil {
+			return err
+		}
+	}
+	e.model = newModel
+	return nil
 }
 
 // LoadFilteredPolicy reloads a filtered policy from file/database.
@@ -147,8 +163,8 @@ func (e *SyncedEnforcer) SavePolicy() error {
 
 // BuildRoleLinks manually rebuild the role inheritance relations.
 func (e *SyncedEnforcer) BuildRoleLinks() error {
-	e.m.RLock()
-	defer e.m.RUnlock()
+	e.m.Lock()
+	defer e.m.Unlock()
 	return e.Enforcer.BuildRoleLinks()
 }
 
@@ -536,10 +552,22 @@ func (e *SyncedEnforcer) UpdateGroupingPolicy(oldRule []string, newRule []string
 	return e.Enforcer.UpdateGroupingPolicy(oldRule, newRule)
 }
 
+func (e *SyncedEnforcer) UpdateGroupingPolicies(oldRules [][]string, newRules [][]string) (bool, error) {
+	e.m.Lock()
+	defer e.m.Unlock()
+	return e.Enforcer.UpdateGroupingPolicies(oldRules, newRules)
+}
+
 func (e *SyncedEnforcer) UpdateNamedGroupingPolicy(ptype string, oldRule []string, newRule []string) (bool, error) {
 	e.m.Lock()
 	defer e.m.Unlock()
 	return e.Enforcer.UpdateNamedGroupingPolicy(ptype, oldRule, newRule)
+}
+
+func (e *SyncedEnforcer) UpdateNamedGroupingPolicies(ptype string, oldRules [][]string, newRules [][]string) (bool, error) {
+	e.m.Lock()
+	defer e.m.Unlock()
+	return e.Enforcer.UpdateNamedGroupingPolicies(ptype, oldRules, newRules)
 }
 
 // RemoveFilteredNamedGroupingPolicy removes a role inheritance rule from the current named policy, field filters can be specified.

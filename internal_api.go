@@ -98,10 +98,13 @@ func (e *Enforcer) addPolicies(sec string, ptype string, rules [][]string) (bool
 	}
 
 	if e.watcher != nil && e.autoNotifyWatcher {
-		err := e.watcher.Update()
-		if err != nil {
-			return true, err
+		var err error
+		if watcher, ok := e.watcher.(persist.WatcherEx); ok {
+			err = watcher.UpdateForAddPolicies(sec, ptype, rules...)
+		} else {
+			err = e.watcher.Update()
 		}
+		return true, err
 	}
 
 	return true, nil
@@ -261,10 +264,13 @@ func (e *Enforcer) removePolicies(sec string, ptype string, rules [][]string) (b
 	}
 
 	if e.watcher != nil && e.autoNotifyWatcher {
-		err := e.watcher.Update()
-		if err != nil {
-			return rulesRemoved, err
+		var err error
+		if watcher, ok := e.watcher.(persist.WatcherEx); ok {
+			err = watcher.UpdateForRemovePolicies(sec, ptype, rules...)
+		} else {
+			err = e.watcher.Update()
 		}
+		return true, err
 	}
 
 	return rulesRemoved, nil
@@ -322,6 +328,12 @@ func (e *Enforcer) updateFilteredPolicies(sec string, ptype string, newRules [][
 		if oldRules, err = e.adapter.(persist.UpdatableAdapter).UpdateFilteredPolicies(sec, ptype, newRules, fieldIndex, fieldValues...); err != nil {
 			if err.Error() != notImplemented {
 				return false, err
+			}
+		}
+		// For compatibility, because some adapters return oldRules containing ptype, see https://github.com/casbin/xorm-adapter/issues/49
+		for i, oldRule := range oldRules {
+			if len(oldRules[i]) == len(newRules[i])+1 {
+				oldRules[i] = oldRule[1:]
 			}
 		}
 	}

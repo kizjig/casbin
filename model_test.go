@@ -15,6 +15,7 @@
 package casbin
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/casbin/casbin/v2/log"
@@ -297,6 +298,12 @@ func TestRBACModelWithPattern(t *testing.T) {
 	// of checking whether "/book/:id" equals the obj: "/book/1", it checks whether the pattern matches.
 	// You can see it as normal RBAC: "/book/:id" == "/book/1" becomes KeyMatch2("/book/:id", "/book/1")
 	e.AddNamedMatchingFunc("g2", "KeyMatch2", util.KeyMatch2)
+	e.AddNamedMatchingFunc("g", "KeyMatch2", util.KeyMatch2)
+	testEnforce(t, e, "any_user", "/pen3/1", "GET", true)
+	testEnforce(t, e, "/book/user/1", "/pen4/1", "GET", true)
+
+	testEnforce(t, e, "/book/user/1", "/pen4/1", "POST", true)
+
 	testEnforce(t, e, "alice", "/book/1", "GET", true)
 	testEnforce(t, e, "alice", "/book/2", "GET", true)
 	testEnforce(t, e, "alice", "/pen/1", "GET", true)
@@ -328,6 +335,9 @@ func (rm *testCustomRoleManager) Clear() error { return nil }
 func (rm *testCustomRoleManager) AddLink(name1 string, name2 string, domain ...string) error {
 	return nil
 }
+func (rm *testCustomRoleManager) BuildRelationship(name1 string, name2 string, domain ...string) error {
+	return nil
+}
 func (rm *testCustomRoleManager) DeleteLink(name1 string, name2 string, domain ...string) error {
 	return nil
 }
@@ -348,6 +358,9 @@ func (rm *testCustomRoleManager) GetUsers(name string, domain ...string) ([]stri
 	return []string{}, nil
 }
 func (rm *testCustomRoleManager) GetDomains(name string) ([]string, error) {
+	return []string{}, nil
+}
+func (rm *testCustomRoleManager) GetAllDomains() ([]string, error) {
 	return []string{}, nil
 }
 func (rm *testCustomRoleManager) PrintRoles() error           { return nil }
@@ -545,8 +558,26 @@ func newTestSubject(name string, age int) testSub {
 	return s
 }
 
+func TestABACNotUsingPolicy(t *testing.T) {
+	e, _ := NewEnforcer("examples/abac_not_using_policy_model.conf", "examples/abac_rule_effect_policy.csv")
+	data1 := newTestResource("data1", "alice")
+	data2 := newTestResource("data2", "bob")
+
+	testEnforce(t, e, "alice", data1, "read", true)
+	testEnforce(t, e, "alice", data1, "write", true)
+	testEnforce(t, e, "alice", data2, "read", false)
+	testEnforce(t, e, "alice", data2, "write", false)
+}
+
 func TestABACPolicy(t *testing.T) {
 	e, _ := NewEnforcer("examples/abac_rule_model.conf", "examples/abac_rule_policy.csv")
+	m := e.GetModel()
+	for sec, ast := range m {
+		fmt.Println(sec)
+		for ptype, p := range ast {
+			fmt.Println(ptype, p)
+		}
+	}
 	sub1 := newTestSubject("alice", 16)
 	sub2 := newTestSubject("alice", 20)
 	sub3 := newTestSubject("alice", 65)

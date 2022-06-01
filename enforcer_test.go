@@ -214,6 +214,18 @@ func TestMatcherUsingInOperator(t *testing.T) {
 	testEnforce(t, e, "anyone", "data3", "read", true)
 }
 
+func TestMatcherUsingInOperatorBracket(t *testing.T) {
+	e, _ := NewEnforcer("examples/rbac_model_matcher_using_in_op_bracket.conf")
+	_, _ = e.AddPermissionForUser("alice", "data1", "read")
+
+	testEnforce(t, e, "alice", "data1", "read", true)
+	testEnforce(t, e, "alice", "data2", "read", true)
+	testEnforce(t, e, "alice", "data3", "read", true)
+	testEnforce(t, e, "anyone", "data1", "read", false)
+	testEnforce(t, e, "anyone", "data2", "read", true)
+	testEnforce(t, e, "anyone", "data3", "read", true)
+}
+
 func TestReloadPolicy(t *testing.T) {
 	e, _ := NewEnforcer("examples/rbac_model.conf", "examples/rbac_policy.csv")
 
@@ -499,6 +511,39 @@ func TestBatchEnforce(t *testing.T) {
 	testBatchEnforce(t, e, [][]interface{}{{"alice", "data1", "read"}, {"bob", "data2", "write"}, {"jack", "data3", "read"}}, results)
 }
 
+func TestSubjectPriority(t *testing.T) {
+	e, _ := NewEnforcer("examples/subject_priority_model.conf", "examples/subject_priority_policy.csv")
+	testBatchEnforce(t, e, [][]interface{}{
+		{"jane", "data1", "read"},
+		{"alice", "data1", "read"},
+	}, []bool{
+		true, true,
+	})
+}
+
+func TestSubjectPriorityWithDomain(t *testing.T) {
+	e, _ := NewEnforcer("examples/subject_priority_model_with_domain.conf", "examples/subject_priority_policy_with_domain.csv")
+	testBatchEnforce(t, e, [][]interface{}{
+		{"alice", "data1", "domain1", "write"},
+		{"bob", "data2", "domain2", "write"},
+	}, []bool{
+		true, true,
+	})
+}
+
+func TestMultiplePolicyDefinitions(t *testing.T) {
+	e, _ := NewEnforcer("examples/multiple_policy_definitions_model.conf", "examples/multiple_policy_definitions_policy.csv")
+	enforceContext := NewEnforceContext("2")
+	enforceContext.EType = "e"
+	testBatchEnforce(t, e, [][]interface{}{
+		{"alice", "data2", "read"},
+		{enforceContext, struct{ Age int }{Age: 70}, "/data1", "read"},
+		{enforceContext, struct{ Age int }{Age: 30}, "/data1", "read"},
+	}, []bool{
+		true, false, true,
+	})
+}
+
 func TestPriorityExplicit(t *testing.T) {
 	e, _ := NewEnforcer("examples/priority_model_explicit.conf", "examples/priority_policy_explicit.csv")
 	testBatchEnforce(t, e, [][]interface{}{
@@ -531,4 +576,32 @@ func TestPriorityExplicit(t *testing.T) {
 	}, []bool{
 		true, true, false, false, false, false, true, true,
 	})
+}
+
+func TestFailedToLoadPolicy(t *testing.T) {
+	e, _ := NewEnforcer("examples/rbac_with_pattern_model.conf", "examples/rbac_with_pattern_policy.csv")
+	e.AddNamedMatchingFunc("g2", "matchingFunc", util.KeyMatch2)
+	testEnforce(t, e, "alice", "/book/1", "GET", true)
+	testEnforce(t, e, "bob", "/pen/3", "GET", true)
+	e.SetAdapter(fileadapter.NewAdapter("not found"))
+	_ = e.LoadPolicy()
+	testEnforce(t, e, "alice", "/book/1", "GET", true)
+	testEnforce(t, e, "bob", "/pen/3", "GET", true)
+}
+
+func TestReloadPolicyWithFunc(t *testing.T) {
+	e, _ := NewEnforcer("examples/rbac_with_pattern_model.conf", "examples/rbac_with_pattern_policy.csv")
+	e.AddNamedMatchingFunc("g2", "matchingFunc", util.KeyMatch2)
+	testEnforce(t, e, "alice", "/book/1", "GET", true)
+	testEnforce(t, e, "bob", "/pen/3", "GET", true)
+	_ = e.LoadPolicy()
+	testEnforce(t, e, "alice", "/book/1", "GET", true)
+	testEnforce(t, e, "bob", "/pen/3", "GET", true)
+}
+
+func TestEvalPriority(t *testing.T) {
+	e, _ := NewEnforcer("examples/eval_operator_model.conf", "examples/eval_operator_policy.csv")
+	testEnforce(t, e, "admin", "users", "write", true)
+	testEnforce(t, e, "admin", "none", "write", false)
+	testEnforce(t, e, "user", "users", "write", false)
 }

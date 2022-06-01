@@ -17,7 +17,8 @@ package casbin
 import (
 	"errors"
 	"fmt"
-	"os"
+	"runtime/debug"
+	"strings"
 
 	"github.com/Knetic/govaluate"
 	"github.com/casbin/casbin/v2/effector"
@@ -30,8 +31,6 @@ import (
 	"github.com/casbin/casbin/v2/util"
 )
 
-type RoleManagerMap map[string]rbac.RoleManager
-
 // Enforcer is the main interface for authorization enforcement and policy management.
 type Enforcer struct {
 	modelPath string
@@ -42,7 +41,7 @@ type Enforcer struct {
 	adapter    persist.Adapter
 	watcher    persist.Watcher
 	dispatcher persist.Dispatcher
-	rmMap      RoleManagerMap
+	rmMap      map[string]rbac.RoleManager
 
 	enabled              bool
 	autoSave             bool
@@ -51,6 +50,14 @@ type Enforcer struct {
 	autoNotifyDispatcher bool
 
 	logger log.Logger
+}
+
+// EnforceContext is used as the first element of the parameter "rvals" in method "enforce"
+type EnforceContext struct {
+	RType string
+	PType string
+	EType string
+	MType string
 }
 
 // NewEnforcer creates an enforcer via file or DB.
@@ -135,21 +142,7 @@ func NewEnforcer(params ...interface{}) (*Enforcer, error) {
 
 // InitWithFile initializes an enforcer with a model file and a policy file.
 func (e *Enforcer) InitWithFile(modelPath string, policyPath string) error {
-	var a persist.Adapter
-
-	// When the policy path is empty, the user only passes the model path.
-	// If the policy path is not empty, we have to make sure the file exists.
-	if policyPath != "" {
-		exists, err := util.PathExists(policyPath)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return os.ErrNotExist
-		}
-		a = fileadapter.NewAdapter(policyPath)
-	}
-
+	a := fileadapter.NewAdapter(policyPath)
 	return e.InitWithAdapter(modelPath, a)
 }
 
@@ -202,6 +195,7 @@ func (e *Enforcer) SetLogger(logger log.Logger) {
 }
 
 func (e *Enforcer) initialize() {
+	e.rmMap = map[string]rbac.RoleManager{}
 	e.eft = effector.NewDefaultEffector()
 	e.watcher = nil
 
@@ -210,9 +204,7 @@ func (e *Enforcer) initialize() {
 	e.autoBuildRoleLinks = true
 	e.autoNotifyWatcher = true
 	e.autoNotifyDispatcher = true
-
-	e.rmMap = RoleManagerMap{}
-	e.initRmMap(e.model, e.rmMap)
+	e.initRmMap()
 }
 
 // LoadModel reloads the model from the model CONF file.
@@ -260,7 +252,13 @@ func (e *Enforcer) SetAdapter(adapter persist.Adapter) {
 // SetWatcher sets the current watcher.
 func (e *Enforcer) SetWatcher(watcher persist.Watcher) error {
 	e.watcher = watcher
-	return watcher.SetUpdateCallback(func(string) { _ = e.LoadPolicy() })
+	if _, ok := e.watcher.(persist.WatcherEx); ok {
+		// The callback of WatcherEx has no generic implementation.
+		return nil
+	} else {
+		// In case the Watcher wants to use a customized callback function, call `SetUpdateCallback` after `SetWatcher`.
+		return watcher.SetUpdateCallback(func(string) { _ = e.LoadPolicy() })
+	}
 }
 
 // GetRoleManager gets the current role manager.
@@ -289,35 +287,37 @@ func (e *Enforcer) ClearPolicy() {
 
 // LoadPolicy reloads the policy from file/database.
 func (e *Enforcer) LoadPolicy() error {
-	newModel := model.NewModel()
-	e.model.CopyTo(&newModel)
-	newModel.ClearPolicy()
-
-	var err error
-	rmMap := RoleManagerMap{}
-	defer func() {
-		if err == nil {
-			e.model = newModel
-			e.rmMap = rmMap
-		}
-	}()
-
-	if err = e.adapter.LoadPolicy(newModel); err != nil {
-		return err
-	}
-
-	if err = newModel.SortPoliciesByPriority(); err != nil {
+	newModel, err := e.prepareNewModel(e.model.Copy())
+	if err != nil {
 		return err
 	}
 
 	if e.autoBuildRoleLinks {
-		err = e.buildRoleLinks(newModel, rmMap)
-		if err != nil {
+		if err := e.tryBuildingRoleLinksWithModel(newModel); err != nil {
 			return err
 		}
 	}
-
+	e.model = newModel
 	return nil
+}
+
+// prepareNewModel prepares a new model with the policy from file/database.
+func (e *Enforcer) prepareNewModel(newModel model.Model) (model.Model, error) {
+	newModel.ClearPolicy()
+
+	if err := e.adapter.LoadPolicy(newModel); err != nil && err.Error() != "invalid file path, file path cannot be empty" {
+		return nil, err
+	}
+
+	if err := newModel.SortPoliciesBySubjectHierarchy(); err != nil {
+		return nil, err
+	}
+
+	if err := newModel.SortPoliciesByPriority(); err != nil {
+		return nil, err
+	}
+
+	return newModel, nil
 }
 
 func (e *Enforcer) loadFilteredPolicy(filter interface{}) error {
@@ -338,6 +338,7 @@ func (e *Enforcer) loadFilteredPolicy(filter interface{}) error {
 		return err
 	}
 
+	e.initRmMap()
 	e.model.PrintPolicy()
 	if e.autoBuildRoleLinks {
 		err := e.BuildRoleLinks()
@@ -389,9 +390,13 @@ func (e *Enforcer) SavePolicy() error {
 	return nil
 }
 
-func (e *Enforcer) initRmMap(model model.Model, rmMap RoleManagerMap) {
-	for ptype := range model["g"] {
-		rmMap[ptype] = defaultrolemanager.NewRoleManager(10)
+func (e *Enforcer) initRmMap() {
+	for ptype := range e.model["g"] {
+		if rm, ok := e.rmMap[ptype]; ok {
+			_ = rm.Clear()
+		} else {
+			e.rmMap[ptype] = defaultrolemanager.NewRoleManager(10)
+		}
 	}
 }
 
@@ -430,14 +435,30 @@ func (e *Enforcer) EnableAutoBuildRoleLinks(autoBuildRoleLinks bool) {
 	e.autoBuildRoleLinks = autoBuildRoleLinks
 }
 
-// BuildRoleLinks manually rebuild the role inheritance relations.
-func (e *Enforcer) BuildRoleLinks() error {
-	return e.buildRoleLinks(e.model, e.rmMap)
+// buildingRoleLinksWithModel attempts to build the role links for a new model
+func (e *Enforcer) buildingRoleLinksWithModel(newModel model.Model) error {
+	for _, rm := range e.rmMap {
+		err := rm.Clear()
+		if err != nil {
+			return err
+		}
+	}
+
+	return newModel.BuildRoleLinks(e.rmMap)
 }
 
-func (e *Enforcer) buildRoleLinks(model model.Model, rmMap RoleManagerMap) error {
-	e.initRmMap(model, rmMap)
-	return model.BuildRoleLinks(rmMap)
+// BuildRoleLinks manually rebuild the role inheritance relations.
+func (e *Enforcer) BuildRoleLinks() error {
+	return e.buildingRoleLinksWithModel(e.model)
+}
+
+// tryBuildingRoleLinksWithModel attempts to build the role links for a new model falls back to the existing model in case of errors
+func (e *Enforcer) tryBuildingRoleLinksWithModel(newModel model.Model) error {
+	if err := e.buildingRoleLinksWithModel(newModel); err != nil {
+		_ = e.buildingRoleLinksWithModel(e.model)
+		return err
+	}
+	return nil
 }
 
 // BuildIncrementalRoleLinks provides incremental build the role inheritance relations.
@@ -445,11 +466,21 @@ func (e *Enforcer) BuildIncrementalRoleLinks(op model.PolicyOp, ptype string, ru
 	return e.model.BuildIncrementalRoleLinks(e.rmMap, op, "g", ptype, rules)
 }
 
+// NewEnforceContext Create a default structure based on the suffix
+func NewEnforceContext(suffix string) EnforceContext {
+	return EnforceContext{
+		RType: "r" + suffix,
+		PType: "p" + suffix,
+		EType: "e" + suffix,
+		MType: "m" + suffix,
+	}
+}
+
 // enforce use a custom matcher to decides whether a "subject" can access a "object" with the operation "action", input parameters are usually: (matcher, sub, obj, act), use model matcher by default when matcher is "".
 func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interface{}) (ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
 		}
 	}()
 
@@ -464,29 +495,40 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 			functions[key] = util.GenerateGFunction(rm)
 		}
 	}
+
+	var (
+		rType = "r"
+		pType = "p"
+		eType = "e"
+		mType = "m"
+	)
+	if len(rvals) != 0 {
+		switch rvals[0].(type) {
+		case EnforceContext:
+			enforceContext := rvals[0].(EnforceContext)
+			rType = enforceContext.RType
+			pType = enforceContext.PType
+			eType = enforceContext.EType
+			mType = enforceContext.MType
+			rvals = rvals[1:]
+		default:
+			break
+		}
+	}
+
 	var expString string
 	if matcher == "" {
-		expString = e.model["m"]["m"].Value
+		expString = e.model["m"][mType].Value
 	} else {
 		expString = util.RemoveComments(util.EscapeAssertion(matcher))
 	}
 
-	var expression *govaluate.EvaluableExpression
-	hasEval := util.HasEval(expString)
-
-	if !hasEval {
-		expression, err = govaluate.NewEvaluableExpressionWithFunctions(expString, functions)
-		if err != nil {
-			return false, err
-		}
-	}
-
-	rTokens := make(map[string]int, len(e.model["r"]["r"].Tokens))
-	for i, token := range e.model["r"]["r"].Tokens {
+	rTokens := make(map[string]int, len(e.model["r"][rType].Tokens))
+	for i, token := range e.model["r"][rType].Tokens {
 		rTokens[token] = i
 	}
-	pTokens := make(map[string]int, len(e.model["p"]["p"].Tokens))
-	for i, token := range e.model["p"]["p"].Tokens {
+	pTokens := make(map[string]int, len(e.model["p"][pType].Tokens))
+	for i, token := range e.model["p"][pType].Tokens {
 		pTokens[token] = i
 	}
 
@@ -497,10 +539,22 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 		pTokens: pTokens,
 	}
 
-	if len(e.model["r"]["r"].Tokens) != len(rvals) {
+	var expression *govaluate.EvaluableExpression
+	hasEval := util.HasEval(expString)
+
+	if hasEval {
+		functions["eval"] = generateEvalFunction(functions, &parameters)
+	}
+
+	expression, err = govaluate.NewEvaluableExpressionWithFunctions(expString, functions)
+	if err != nil {
+		return false, err
+	}
+
+	if len(e.model["r"][rType].Tokens) != len(rvals) {
 		return false, fmt.Errorf(
 			"invalid request size: expected %d, got %d, rvals: %v",
-			len(e.model["r"]["r"].Tokens),
+			len(e.model["r"][rType].Tokens),
 			len(rvals),
 			rvals)
 	}
@@ -510,39 +564,22 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 
 	var effect effector.Effect
 	var explainIndex int
-	if policyLen := len(e.model["p"]["p"].Policy); policyLen != 0 {
+
+	if policyLen := len(e.model["p"][pType].Policy); policyLen != 0 && strings.Contains(expString, pType+"_") {
 		policyEffects = make([]effector.Effect, policyLen)
 		matcherResults = make([]float64, policyLen)
 
-		for policyIndex, pvals := range e.model["p"]["p"].Policy {
+		for policyIndex, pvals := range e.model["p"][pType].Policy {
 			// log.LogPrint("Policy Rule: ", pvals)
-			if len(e.model["p"]["p"].Tokens) != len(pvals) {
+			if len(e.model["p"][pType].Tokens) != len(pvals) {
 				return false, fmt.Errorf(
 					"invalid policy size: expected %d, got %d, pvals: %v",
-					len(e.model["p"]["p"].Tokens),
+					len(e.model["p"][pType].Tokens),
 					len(pvals),
 					pvals)
 			}
 
 			parameters.pVals = pvals
-
-			if hasEval {
-				ruleNames := util.GetEvalValue(expString)
-				replacements := make(map[string]string)
-				for _, ruleName := range ruleNames {
-					if j, ok := parameters.pTokens[ruleName]; ok {
-						rule := util.EscapeAssertion(pvals[j])
-						replacements[ruleName] = rule
-					} else {
-						return false, errors.New("please make sure rule exists in policy when using eval() in matcher")
-					}
-				}
-				expWithRule := util.ReplaceEvalWithMap(expString, replacements)
-				expression, err = govaluate.NewEvaluableExpressionWithFunctions(expWithRule, functions)
-				if err != nil {
-					return false, fmt.Errorf("p.sub_rule should satisfy the syntax of matcher: %s", err)
-				}
-			}
 
 			result, err := expression.Eval(parameters)
 			// log.LogPrint("Result: ", result)
@@ -566,7 +603,7 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 				return false, errors.New("matcher result should be bool, int or float")
 			}
 
-			if j, ok := parameters.pTokens["p_eft"]; ok {
+			if j, ok := parameters.pTokens[pType+"_eft"]; ok {
 				eft := parameters.pVals[j]
 				if eft == "allow" {
 					policyEffects[policyIndex] = effector.Allow
@@ -583,7 +620,7 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 			//	break
 			//}
 
-			effect, explainIndex, err = e.eft.MergeEffects(e.model["e"]["e"].Value, policyEffects[:policyIndex+1], matcherResults[:policyIndex+1], policyIndex, policyLen)
+			effect, explainIndex, err = e.eft.MergeEffects(e.model["e"][eType].Value, policyEffects, matcherResults, policyIndex, policyLen)
 			if err != nil {
 				return false, err
 			}
@@ -592,7 +629,8 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 			}
 		}
 	} else {
-		if hasEval && len(e.model["p"]["p"].Policy) == 0 {
+
+		if hasEval && len(e.model["p"][pType].Policy) == 0 {
 			return false, errors.New("please make sure rule exists in policy when using eval() in matcher")
 		}
 
@@ -614,7 +652,7 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 			policyEffects[0] = effector.Indeterminate
 		}
 
-		effect, explainIndex, err = e.eft.MergeEffects(e.model["e"]["e"].Value, policyEffects, matcherResults, 0, 1)
+		effect, explainIndex, err = e.eft.MergeEffects(e.model["e"][eType].Value, policyEffects, matcherResults, 0, 1)
 		if err != nil {
 			return false, err
 		}
@@ -623,9 +661,13 @@ func (e *Enforcer) enforce(matcher string, explains *[]string, rvals ...interfac
 	var logExplains [][]string
 
 	if explains != nil {
-		logExplains = append(logExplains, *explains)
-		if explainIndex != -1 && len(e.model["p"]["p"].Policy) > explainIndex {
-			*explains = e.model["p"]["p"].Policy[explainIndex]
+		if len(*explains) > 0 {
+			logExplains = append(logExplains, *explains)
+		}
+
+		if explainIndex != -1 && len(e.model["p"][pType].Policy) > explainIndex {
+			*explains = e.model["p"][pType].Policy[explainIndex]
+			logExplains = append(logExplains, *explains)
 		}
 	}
 
@@ -737,5 +779,24 @@ func (p enforceParameters) Get(name string) (interface{}, error) {
 		return p.rVals[i], nil
 	default:
 		return nil, errors.New("No parameter '" + name + "' found.")
+	}
+}
+
+func generateEvalFunction(functions map[string]govaluate.ExpressionFunction, parameters *enforceParameters) govaluate.ExpressionFunction {
+	return func(args ...interface{}) (interface{}, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("Function eval(subrule string) expected %d arguments, but got %d", 1, len(args))
+		}
+
+		expression, ok := args[0].(string)
+		if !ok {
+			return nil, errors.New("Argument of eval(subrule string) must be a string")
+		}
+		expression = util.EscapeAssertion(expression)
+		expr, err := govaluate.NewEvaluableExpressionWithFunctions(expression, functions)
+		if err != nil {
+			return nil, fmt.Errorf("Error while parsing eval parameter: %s, %s", expression, err.Error())
+		}
+		return expr.Eval(parameters)
 	}
 }

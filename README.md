@@ -9,6 +9,10 @@ Casbin
 [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/casbin/lobby)
 [![Sourcegraph](https://sourcegraph.com/github.com/casbin/casbin/-/badge.svg)](https://sourcegraph.com/github.com/casbin/casbin?badge)
 
+💖 [**Looking for an open-source identity and access management solution like Okta, Auth0, Keycloak ? Learn more about: Casdoor**](https://casdoor.org/)
+
+<a href="https://casdoor.org/"><img src="https://user-images.githubusercontent.com/3787410/147868267-6ac74908-5654-4f9c-ac79-8852af9ff925.png" alt="casdoor" style="width: 50%; height: 50%"/></a>
+
 **News**: still worry about how to write the correct Casbin policy? ``Casbin online editor`` is coming to help! Try it at: https://casbin.org/editor/
 
 ![casbin Logo](casbin-logo.png)
@@ -125,7 +129,7 @@ What Casbin does:
 1. enforce the policy in the classic ``{subject, object, action}`` form or a customized form as you defined, both allow and deny authorizations are supported.
 2. handle the storage of the access control model and its policy.
 3. manage the role-user mappings and role-role mappings (aka role hierarchy in RBAC).
-4. support built-in superuser like ``root`` or ``administrator``. A superuser can do anything without explict permissions.
+4. support built-in superuser like ``root`` or ``administrator``. A superuser can do anything without explicit permissions.
 5. multiple built-in operators to support the rule matching. For example, ``keyMatch`` can map a resource key ``/foo/bar`` to the pattern ``/foo*``.
 
 What Casbin does NOT do:
@@ -168,7 +172,7 @@ Note: you can also initialize an enforcer with policy in DB instead of file, see
     obj := "data1" // the resource that is going to be accessed.
     act := "read" // the operation that the user performs on the resource.
 
-    if res := e.Enforce(sub, obj, act); res {
+    if res, _ := e.Enforce(sub, obj, act); res {
         // permit alice to read data1
     } else {
         // deny the request, show an error

@@ -26,6 +26,10 @@ import (
 	"github.com/casbin/casbin/v2/rbac"
 )
 
+var (
+	keyMatch4Re *regexp.Regexp = regexp.MustCompile(`{([^/]+)}`)
+)
+
 // validate the variadic parameter size and type as string
 func validateVariadicArgs(expectedLen int, args ...interface{}) error {
 	if len(args) != expectedLen {
@@ -188,7 +192,7 @@ func KeyMatch4(key1 string, key2 string) bool {
 
 	tokens := []string{}
 
-	re := regexp.MustCompile(`\{([^/]+)\}`)
+	re := keyMatch4Re
 	key2 = re.ReplaceAllStringFunc(key2, func(s string) string {
 		tokens = append(tokens, s[1:len(s)-1])
 		return "([^/]+)"
@@ -229,6 +233,29 @@ func KeyMatch4Func(args ...interface{}) (interface{}, error) {
 	name2 := args[1].(string)
 
 	return bool(KeyMatch4(name1, name2)), nil
+}
+
+// KeyMatch determines whether key1 matches the pattern of key2 and ignores the parameters in key2.
+// For example, "/foo/bar?status=1&type=2" matches "/foo/bar"
+func KeyMatch5(key1 string, key2 string) bool {
+	i := strings.Index(key1, "?")
+	if i == -1 {
+		return key1 == key2
+	}
+
+	return key1[:i] == key2
+}
+
+// KeyMatch5Func is the wrapper for KeyMatch5.
+func KeyMatch5Func(args ...interface{}) (interface{}, error) {
+	if err := validateVariadicArgs(2, args...); err != nil {
+		return false, fmt.Errorf("%s: %s", "keyMatch5", err)
+	}
+
+	name1 := args[0].(string)
+	name2 := args[1].(string)
+
+	return bool(KeyMatch5(name1, name2)), nil
 }
 
 // RegexMatch determines whether key1 matches the pattern of key2 in regular expression.
@@ -302,24 +329,35 @@ func GlobMatchFunc(args ...interface{}) (interface{}, error) {
 	return GlobMatch(name1, name2)
 }
 
-// GenerateGFunction is the factory method of the g(_, _) function.
+// GenerateGFunction is the factory method of the g(_, _[, _]) function.
 func GenerateGFunction(rm rbac.RoleManager) govaluate.ExpressionFunction {
 	memorized := map[string]bool{}
-
 	return func(args ...interface{}) (interface{}, error) {
-		name1 := args[0].(string)
-		name2 := args[1].(string)
+		// Like all our other govaluate functions, all args are strings.
 
-		key := ""
-		for index := 0; index < len(args); index++ {
-			key += ";" + fmt.Sprintf("%v", args[index])
+		// Allocate and generate a cache key from the arguments...
+		total := len(args)
+		for _, a := range args {
+			aStr := a.(string)
+			total += len(aStr)
 		}
+		builder := strings.Builder{}
+		builder.Grow(total)
+		for _, arg := range args {
+			builder.WriteByte(0)
+			builder.WriteString(arg.(string))
+		}
+		key := builder.String()
 
+		// ...and see if we've already calculated this.
 		v, found := memorized[key]
 		if found {
 			return v, nil
 		}
 
+		// If not, do the calculation.
+		// There are guaranteed to be exactly 2 or 3 arguments.
+		name1, name2 := args[0].(string), args[1].(string)
 		if rm == nil {
 			v = name1 == name2
 		} else if len(args) == 2 {
